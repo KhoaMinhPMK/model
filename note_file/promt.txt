@@ -1,0 +1,28 @@
+file test.py cho tôi và làm theo logic sau thêm một file xử lý logic chuyên sâu với nội dung như sau
+
+trên box nhận diện của người á, cho 4 điểm ABCD trên khung nhận diện người, AB ở cạnh trên đầu, CD ở cạnh dưới chân
+
+lập hàm tính tỉ lệ AB và BC nếu AB nhỏ BC và AB/BC < 0.5 thì là trạng thái của boudingbox là stand
+
+nếu AB lớn hơn BC và AB/BC > 1 thì là trạng thái của boudingbox là lie
+
+trường hợp tỉ lệ ở khoảng giữa còn lại sẽ là like_fall
+
+đừng nhầm giữa tỉ lệ các cạnh với tỉ lệ nhận diện được nha
+nội dung trên box hiển thị như sau  person K(tỉ lệ khung) - X(tỉ lệ nhận diện person) - status
+===========================================================================================================
+tốt, bây giờ đọc file test 2, thêm vào test cái model model = YOLO('D:/demo/model_yolo/model_fall/yolov8_fall_detection_model.pt')
+
+model đó có 2 label là person và pillow, tôi chỉ cần nhận diện pillow thôi, vậy nên nhớ để ý đừng để nhầm giữa person của model hiện tại và model mới thêm vào, tôi không cần cái person của model mới thêm vào
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+tốt bây giờ xây dựng logic để xử lý phân biệt giữa sleep và fall như sau
+
+logic như sau
+1.luôn kiểm tra trạng thái sleep trước 
+điều kiện có person, có pillow, trạng thái khởi nguyên đang là lie, pillow và person nằm chồng lên nhau, kết luận là sleep
+2. sau khi kiểm tra sleep nếu không thỏa mà trạng thái khởi nguyên đang là lie thì sẽ kết luận là fall
+Định kỳ (ví dụ mỗi 1 giây), mô hình phân loại tư thế của người trong bounding box
+Khi có kết quả “fall”, ta ghi trạng thái này vào một “khung nhớ” (danh sách) có độ dài 5.
+nếu khung nhớ đã có 5 loại bỏ status cũ nhất
+Nếu trong 5 lần ghi gần nhất, có ít nhất 3 lần là “fall” thì hệ thống kết luận người đã ngã và gửi thông báo. 

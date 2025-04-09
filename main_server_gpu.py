@@ -1,0 +1,479 @@
+from flask import Flask, Response, request, jsonify
+from flask_sock import Sock  # Add this import
+from ultralytics import YOLO
+import cv2
+import numpy as np
+from module.pose_analysis import calculate_box_ratio, get_box_corners
+from module.status_analyzer import StatusAnalyzer
+import torch
+import time
+from module.emergency_signal_detector import EmergencySignalDetector
+import io
+import base64
+import json  # Add this import
+
+app = Flask(__name__)
+sock = Sock(app)  # Initialize WebSocket
+
+# Constants and model paths
+MODEL_PATH = "D:/demo/model_yolo/yolo11s-pose.pt"
+MODEL_FALL_PATH = "D:/demo/model_yolo/best.pt"
+MODEL_SEG_PATH = "D:/demo/model_yolo/yolo11n-seg.pt"
+MODEL_YOLO12N_PATH = "D:/demo/model_yolo/yolo12n.pt"
+
+# Print GPU info
+print("CUDA available:", torch.cuda.is_available())
+print("Current device:", torch.cuda.current_device())
+print("Device name:", torch.cuda.get_device_name())
+
+# Load models with GPU
+model_pose = YOLO(MODEL_PATH).to('cuda')
+model_fall = YOLO(MODEL_FALL_PATH).to('cuda')
+model_seg = YOLO(MODEL_SEG_PATH).to('cuda')
+model_yolo12n = YOLO(MODEL_YOLO12N_PATH).to('cuda')
+
+# Initialize status analyzer
+status_analyzer = StatusAnalyzer()
+
+# Label mapping
+label_mapping = {
+    'pillow': 'pillow',
+    'bed': 'bed'
+}
+
+def process_pillows(frame, results_fall):
+    """Process all detections from best.pt model"""
+    for r in results_fall:
+        boxes = r.boxes
+        for box in boxes:
+            # Get class
+            cls = int(box.cls[0])
+            # Get name and map it
+            original_name = model_fall.names[cls]
+            name = label_mapping.get(original_name, original_name)
+            
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            
+            # Draw detection with color based on class
+            color = (255, 0, 255) if name == 'pillow' else (0, 255, 0)
+            
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame,
+                      f'{name} ({conf:.2f})',
+                      (x1, y1 - 10),
+                      cv2.FONT_HERSHEY_SIMPLEX,
+                      0.5,
+                      color,
+                      2)
+    return frame
+
+def process_results(frame, results_pose):
+    results_fall = model_fall(frame)
+    results_seg = model_seg(frame)
+    results_yolo12n = model_yolo12n(frame)
+    annotated_frame = results_pose[0].plot(conf=False, boxes=False)
+    
+    pillow_boxes = []
+    bed_detections = []
+    
+    # Process detections from best.pt model
+    for r in results_fall:
+        boxes = r.boxes
+        for box in boxes:
+            original_name = model_fall.names[int(box.cls[0])]
+            name = label_mapping.get(original_name, original_name)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+
+            if name == 'pillow':
+                pillow_boxes.append([x1, y1, x2, y2])
+                cv2.rectangle(annotated_frame, 
+                            (x1, y1), 
+                            (x2, y2), 
+                            (255, 0, 255), 2)
+                cv2.putText(annotated_frame,
+                          f'pillow ({conf:.2f})',
+                          (x1, y1 - 10),
+                          cv2.FONT_HERSHEY_SIMPLEX,
+                          0.5,
+                          (255, 0, 255),
+                          2)
+            elif name == 'bed':
+                bed_detections.append({
+                    'box': [x1, y1, x2, y2],
+                    'conf': conf,
+                    'source': 'best'
+                })
+
+    # Process beds from seg model
+    for r in results_seg:
+        boxes = r.boxes
+        for box in boxes:
+            if model_seg.names[int(box.cls[0])] == 'bed':
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = float(box.conf[0])
+                bed_detections.append({
+                    'box': [x1, y1, x2, y2],
+                    'conf': conf,
+                    'source': 'seg'
+                })
+
+    # Process beds from yolo12n model
+    for r in results_yolo12n:
+        boxes = r.boxes
+        for box in boxes:
+            if model_yolo12n.names[int(box.cls[0])] == 'bed':
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = float(box.conf[0])
+                bed_detections.append({
+                    'box': [x1, y1, x2, y2],
+                    'conf': conf,
+                    'source': 'yolo12n'
+                })
+
+    bed_detections.sort(key=lambda x: x['conf'], reverse=True)
+    bed_boxes = []
+
+    if bed_detections:
+        best_bed = bed_detections[0]
+        bed_boxes.append(best_bed['box'])
+        x1, y1, x2, y2 = best_bed['box']
+        cv2.rectangle(annotated_frame, 
+                    (x1, y1), 
+                    (x2, y2), 
+                    (0, 255, 255), 2)
+        cv2.putText(annotated_frame,
+                  f"bed-{best_bed['source']} ({best_bed['conf']:.2f})",
+                  (x1, y1 - 10),
+                  cv2.FONT_HERSHEY_SIMPLEX,
+                  0.5,
+                  (0, 255, 255),
+                  2)
+
+    # Process person detections
+    boxes = results_pose[0].boxes
+    if len(boxes) > 0:
+        mask = boxes.conf > 0.5
+        confident_boxes = boxes[mask]
+        person_boxes = []
+        current_state = None
+        
+        for box in confident_boxes:
+            x1, y1, x2, y2 = box.xyxy[0]
+            conf = box.conf.item()
+            person_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+            
+            ratio, state = calculate_box_ratio([x1, y1, x2, y2])
+            current_state = state
+            
+            keypoints = results_pose[0].keypoints.data[0].cpu().numpy()
+            status = status_analyzer.analyze_status(person_boxes, pillow_boxes, 
+                                                 bed_boxes, state, keypoints)
+            
+            color = {
+                "sleep": (255, 191, 0),
+                "fall": (0, 255, 255),
+                "fall_prepare": (0, 69, 255),
+                "fall_alert": (0, 0, 255),
+                "normal": (0, 255, 0),
+                "like_fall_1": (0, 255, 255),
+                "like_fall_2": (0, 200, 255),
+                "like_fall_3": (0, 140, 255),
+                "like_fall_4": (0, 69, 255),
+                "emergency": (0, 0, 255),
+                None: (0, 255, 0)
+            }[status]
+            
+            cv2.rectangle(annotated_frame, 
+                         (int(x1), int(y1)), 
+                         (int(x2), int(y2)), 
+                         color, 2)
+            
+            A, B, C, D = get_box_corners([x1, y1, x2, y2])
+            
+            for point, label in zip([A, B, C, D], ['A', 'B', 'C', 'D']):
+                cv2.circle(annotated_frame, 
+                          (int(point[0]), int(point[1])), 
+                          5, color, -1)
+                cv2.putText(annotated_frame, 
+                           label, 
+                           (int(point[0])+10, int(point[1])+10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.5, color, 2)
+            
+            status_text = f"person K({ratio:.2f}) - X({conf:.2f})"
+            if "like_fall" in state:
+                level = state.split("_")[-1]
+                status_text += f" - {state.replace('_'+level, '')} (L{level})"
+            else:
+                status_text += f" - {state}"
+            
+            if status and "like_fall" not in state:
+                status_text += f" [{status}]"
+            
+            cv2.putText(annotated_frame, 
+                       status_text,
+                       (int(x1), int(y1) - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, color, 2)
+            
+            if status == "fall_alert":
+                if status_analyzer.emergency_active:
+                    cv2.putText(annotated_frame,
+                               "EMERGENCY SIGNAL DETECTED!",
+                               (20, 80),
+                               cv2.FONT_HERSHEY_SIMPLEX,
+                               1,
+                               (0, 0, 255),
+                               2)
+                elif status_analyzer.alert_ready:
+                    cv2.putText(annotated_frame,
+                               "FALL ALERT - EMERGENCY!",
+                               (20, 80),
+                               cv2.FONT_HERSHEY_SIMPLEX,
+                               1,
+                               (0, 0, 255),
+                               2)
+            elif status == "fall_prepare":
+                prep_time = status_analyzer.get_preparation_time()
+                cv2.putText(annotated_frame,
+                           f"Preparing Alert - {prep_time:.1f}s",
+                           (20, 80),
+                           cv2.FONT_HERSHEY_SIMPLEX,
+                           1,
+                           (0, 69, 255),
+                           2)
+
+    # Prepare detection results
+    detection_results = {
+        'beds': [],
+        'pillows': [],
+        'detections': []
+    }
+    
+    # Add bed detections
+    if bed_detections:
+        best_bed = bed_detections[0]
+        detection_results['beds'].append(best_bed['box'])
+
+    # Add pillow detections
+    detection_results['pillows'] = pillow_boxes
+
+    # Add person detections
+    if len(boxes) > 0:
+        mask = boxes.conf > 0.5
+        confident_boxes = boxes[mask]
+        for box in confident_boxes:
+            x1, y1, x2, y2 = box.xyxy[0]
+            conf = box.conf.item()
+            ratio, state = calculate_box_ratio([x1, y1, x2, y2])
+            
+            keypoints = results_pose[0].keypoints.data[0].cpu().numpy()
+            status = status_analyzer.analyze_status([[int(x1), int(y1), int(x2), int(y2)]], 
+                                                 pillow_boxes, 
+                                                 detection_results['beds'], 
+                                                 state, 
+                                                 keypoints)
+            
+            detection_results['detections'].append({
+                'box': [int(x1), int(y1), int(x2), int(y2)],
+                'confidence': float(conf),
+                'ratio': float(ratio),
+                'state': state,
+                'status': status,
+                'is_emergency': status_analyzer.emergency_active
+            })
+
+    return annotated_frame, detection_results
+
+def process_frame(frame):
+    """Process a single frame"""
+    results_pose = model_pose(frame)
+    return process_results(frame, results_pose)
+
+@app.route('/process_video', methods=['POST'])
+def process_video():
+    if 'video' not in request.files:
+        return jsonify({'error': 'No video file provided'}), 400
+    
+    video_file = request.files['video']
+    temp_path = "temp_video.mp4"
+    video_file.save(temp_path)
+    
+    cap = cv2.VideoCapture(temp_path)
+    processed_frames = []
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        processed_frame = process_frame(frame)
+        _, buffer = cv2.imencode('.jpg', processed_frame)
+        processed_frames.append(base64.b64encode(buffer).decode('utf-8'))
+    
+    cap.release()
+    import os
+    os.remove(temp_path)
+    
+    return jsonify({
+        'frames': processed_frames,
+        'frame_count': len(processed_frames)
+    })
+
+@app.route('/process_stream', methods=['POST'])
+def process_stream():
+    if 'frame' not in request.files:
+        return jsonify({'error': 'No frame provided'}), 400
+    
+    frame_file = request.files['frame']
+    frame_bytes = frame_file.read()
+    frame_np = np.frombuffer(frame_bytes, np.uint8)
+    frame = cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
+    
+    processed_frame = process_frame(frame)
+    
+    _, buffer = cv2.imencode('.jpg', processed_frame)
+    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+    
+    return jsonify({
+        'processed_frame': frame_base64
+    })
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'gpu_available': torch.cuda.is_available(),
+        'models_loaded': True
+    })
+
+def find_virtual_camera():
+    """Find the correct camera index for OBS Virtual Camera"""
+    try:
+        # Thử tìm camera với nhiều backend khác nhau
+        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        
+        for backend in backends:
+            for i in range(10):
+                cap = cv2.VideoCapture(i + backend)
+                if cap.isOpened():
+                    # Test frame capture
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        cap.release()
+                        return i, backend
+                cap.release()
+        
+        # Nếu không tìm thấy, thử lại với DirectShow
+        for i in range(10):
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    cap.release()
+                    return i, cv2.CAP_DSHOW
+                cap.release()
+                
+        return None, None
+    except Exception as e:
+        print(f"Error finding camera: {e}")
+        return None, None
+
+@sock.route('/ws')
+def handle_websocket(ws):
+    cap = None
+    camera_idx = None
+    backend = None
+    reconnect_delay = 1  # Bắt đầu với 1 giây
+    max_reconnect_delay = 30  # Tối đa 30 giây
+    
+    try:
+        camera_idx, backend = find_virtual_camera()
+        if camera_idx is None:
+            ws.send(json.dumps({'error': 'No virtual camera found'}))
+            return
+
+        while True:  # Main connection loop
+            try:
+                if cap is None or not cap.isOpened():
+                    # Thử kết nối camera
+                    cap = cv2.VideoCapture(camera_idx, backend)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                    if not cap.isOpened():
+                        print(f"Failed to open camera with index {camera_idx}")
+                        raise Exception("Camera not opened")
+
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    raise Exception("Failed to grab frame")
+
+                # Reset reconnect delay on successful frame grab
+                reconnect_delay = 1
+
+                # Process frame
+                processed_frame, detection_results = process_frame(frame)
+                
+                # Encode and send
+                _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+
+                result = {
+                    'image': frame_base64,
+                    'dimensions': {
+                        'width': 960,
+                        'height': 540
+                    },
+                    'emergency_alerts': [],  # Thêm mảng thông báo khẩn cấp
+                    **detection_results
+                }
+
+                # Kiểm tra và thêm thông báo khẩn cấp
+                if status_analyzer.emergency_active:
+                    result['emergency_alerts'].append({
+                        'type': 'emergency',
+                        'message': 'EMERGENCY SIGNAL DETECTED!'
+                    })
+                # Kiểm tra fall_alert từ các detection
+                for detection in detection_results.get('detections', []):
+                    if detection.get('status') == 'fall_alert':
+                        result['emergency_alerts'].append({
+                            'type': 'fall',
+                            'message': 'FALL ALERT - EMERGENCY!'
+                        })
+                        break
+
+                ws.send(json.dumps(result))
+                
+                time.sleep(1/60)
+
+            except Exception as e:
+                print(f"Error during streaming: {e}")
+                if cap is not None:
+                    cap.release()
+                    cap = None
+
+                # Exponential backoff for reconnection
+                print(f"Attempting to reconnect in {reconnect_delay} seconds...")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+                # Re-detect camera if needed
+                if camera_idx is None:
+                    camera_idx, backend = find_virtual_camera()
+                    if camera_idx is None:
+                        raise Exception("Failed to find camera during reconnection")
+
+    except Exception as e:
+        print(f"Fatal WebSocket error: {e}")
+    finally:
+        if cap is not None:
+            cap.release()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=True)

@@ -1,0 +1,400 @@
+# BÁO CÁO KỸ THUẬT: HỆ THỐNG PHÁT HIỆN TÉ NGÃ VÀ TÌNH HUỐNG KHẨN CẤP
+
+## 3. PHÂN TÍCH KỸ THUẬT HỆ THỐNG
+
+### 3.1. Giới thiệu tổng quan
+Hệ thống phát hiện té ngã và tình huống khẩn cấp được phát triển dựa trên công nghệ thị giác máy tính và học sâu. Hệ thống có khả năng phát hiện các trạng thái nguy hiểm như té ngã, đau tim và đột quỵ thông qua việc phân tích tư thế, chuyển động và các tín hiệu khẩn cấp từ người dùng.
+
+### 3.2. Kiến trúc hệ thống
+
+#### 3.2.1. Yêu cầu phần cứng và phần mềm
+- GPU tương thích CUDA (khuyến nghị cho hiệu suất tối ưu)
+- Hỗ trợ xử lý CPU cho các thiết bị không có GPU chuyên dụng
+- Python 3.8 trở lên
+- Các thư viện: ultralytics, opencv-python, numpy, torch, flask, flask_sock
+- Tối thiểu 4GB VRAM GPU hoặc 8GB RAM cho phiên bản CPU
+
+#### 3.2.2. Các thành phần mô hình
+- yolo11s-pose.pt: Mô hình phát hiện và ước lượng tư thế người
+- best.pt: Mô hình phát hiện đối tượng (giường, gối)
+- yolo11n-seg.pt: Mô hình phân đoạn bổ sung cho phát hiện giường
+- yolo12n.pt: Mô hình phát hiện bổ sung để tăng độ chính xác
+
+### 3.3. Luồng xử lý và phân loại trạng thái
+
+#### 3.3.1. Quy trình phát hiện
+Hệ thống thực hiện quy trình phát hiện đa giai đoạn:
+1. Phát hiện tư thế người bằng YOLO-Pose
+2. Phát hiện đối tượng trong môi trường (giường, gối)
+3. Phân tích trạng thái thông qua lập luận hình học và thời gian
+4. Tạo cảnh báo và trực quan hóa kết quả
+
+#### 3.3.2. Hệ thống phân loại trạng thái
+Các trạng thái được phân loại:
+- normal: Người ở tư thế bình thường (đứng hoặc đi)
+- sleep: Người nằm trên giường
+- like_fall_1 đến like_fall_4: Các cấp độ khả năng té ngã
+- fall: Phát hiện té ngã ban đầu
+- fall_prepare: Chuẩn bị cảnh báo té ngã (đếm ngược xác nhận)
+- fall_alert: Xác nhận té ngã cần can thiệp
+- emergency: Phát hiện tín hiệu khẩn cấp (đau tim, đột quỵ)
+
+### 3.4. Giải thích chi tiết về cách xử lý và nhận biết các trạng thái
+
+#### 3.4.1. Phân tích tỷ lệ khung giới hạn và xác định trạng thái cơ bản
+**Nguyên lý tính toán tỷ lệ khung giới hạn:**
+Hệ thống sử dụng phương pháp phân tích hình học để xác định trạng thái cơ thể thông qua tỷ lệ khung giới hạn (bounding box). Đây là kỹ thuật cơ bản nhưng hiệu quả trong việc phân biệt các tư thế chính như đứng, nằm và ngồi.
+
+**Tỷ lệ chiều cao/chiều rộng (H/W):** Chỉ số cơ bản nhất để phân biệt các trạng thái
+- Đứng: Tỷ lệ H/W > 1.5 (chiều cao lớn hơn nhiều so với chiều rộng)
+- Ngồi: Tỷ lệ H/W khoảng 1.0 - 1.5 (chiều cao gần bằng chiều rộng)
+- Nằm: Tỷ lệ H/W < 0.8 (chiều cao nhỏ hơn chiều rộng)
+
+**Biến thiên tỷ lệ theo thời gian:** Đặc biệt quan trọng để phát hiện chuyển động bất thường
+- Thay đổi nhanh từ tỷ lệ cao xuống thấp: Dấu hiệu té ngã
+- Thay đổi từ từ từ cao xuống thấp: Có thể là đột quỵ hoặc nằm xuống có chủ đích
+
+**Tương quan không gian:** Vị trí khung giới hạn so với các đối tượng trong môi trường
+- Gần giường: Có thể là hành động bình thường khi nằm xuống
+- Xa giường: Tăng khả năng là té ngã khi tỷ lệ H/W thấp
+
+#### 3.4.2. Phân tích điểm khớp và góc cơ thể
+**Xác định góc và tư thế từ các điểm khớp:**
+Thông tin từ 17 điểm khớp được mô hình YOLO-Pose cung cấp cho phép phân tích chi tiết hơn về tư thế cơ thể so với chỉ dùng khung giới hạn.
+
+**Góc thân trên:** Tính từ điểm khớp vai đến hông giúp xác định độ nghiêng của thân người
+- Góc gần 90° so với mặt phẳng ngang: người đang đứng
+- Góc 30°-60°: người ngồi hoặc cúi
+- Góc gần 0°: người nằm hoặc té ngã
+
+**Vị trí tương đối của đầu:** So sánh tọa độ Y của đầu với hông
+- Đầu cao hơn hông nhiều: trạng thái đứng
+- Đầu cao hơn hông ít: trạng thái ngồi
+- Đầu ngang bằng hoặc thấp hơn hông: trạng thái nằm hoặc té ngã
+
+**Phát hiện bất đối xứng:** Phân tích sự chênh lệch giữa bên trái và phải của cơ thể
+- Bất đối xứng cao giữa hai bên: dấu hiệu của té ngã hoặc đột quỵ
+- Một bên cơ thể gần mặt đất hơn: chỉ báo hướng té ngã
+
+#### 3.4.3. Thuật toán phân tích liên tục và phát hiện mẫu
+**Xây dựng và phân tích chuỗi trạng thái:**
+Hệ thống không chỉ dựa vào thông tin từ một khung hình mà theo dõi chuỗi trạng thái qua thời gian để đưa ra quyết định chính xác hơn.
+
+**Cửa sổ trượt:** Lưu trữ và phân tích từ 30-120 khung hình gần nhất (1-4 giây với tốc độ 30FPS)
+- Phát hiện mẫu chuyển động đặc trưng của té ngã: đứng → chuyển động nhanh → nằm
+- Phát hiện mẫu của đột quỵ: đứng → khụy gối → nằm
+
+**Phân tích xu hướng:** Theo dõi hướng thay đổi của các chỉ số
+- Tốc độ thay đổi tỷ lệ H/W
+- Biên độ thay đổi vị trí các điểm khớp
+- Thời gian duy trì một trạng thái bất thường
+
+**Thuật toán trung bình có trọng số:** Giảm thiểu ảnh hưởng của nhiễu và sai số tạm thời
+- Khung hình gần đây có trọng số cao hơn
+- Loại bỏ các giá trị ngoại lai (outlier) trong chuỗi dữ liệu
+
+#### 3.4.4. Phát hiện cử động tay và các tín hiệu khẩn cấp
+**Phân tích chuyển động cánh tay:**
+Để phát hiện dấu hiệu đau tim và các tín hiệu khẩn cấp khác, hệ thống tập trung vào phân tích chuyển động cánh tay.
+
+**Vùng không gian thân người:** Hệ thống tạo một lưới ảo trên cơ thể để phân vùng không gian
+- Vùng ngực: phần giữa hai vai và trên hông
+- Vùng đầu: trên vai và cổ
+- Vùng bụng: dưới ngực và trên hông
+
+**Phát hiện vị trí tay:** Theo dõi điểm khớp cổ tay và bàn tay
+- Tay đặt trên vùng ngực kéo dài (>5 giây): dấu hiệu đau tim
+- Tay đưa lên đầu hoặc cổ kéo dài: có thể là đột quỵ hoặc khó thở
+- Chuyển động tay nhanh và bất thường: có thể là co giật
+
+**Tính toán vận tốc cử động:** Đo tốc độ di chuyển của các điểm khớp
+- Chuyển động chậm: có thể là cử động có chủ đích
+- Chuyển động đột ngột nhanh: có thể là té ngã hoặc co giật
+
+#### 3.4.5. Hệ thống phân cấp nhận dạng và xác nhận trạng thái
+**Quy trình ra quyết định đa lớp:**
+Để nâng cao độ chính xác và giảm thiểu cảnh báo giả, hệ thống sử dụng phương pháp quyết định đa lớp.
+
+**Lớp 1: Phát hiện thô:** Dựa trên tỷ lệ khung giới hạn và vị trí cơ bản
+- Nhanh chóng xác định các trạng thái tiềm ẩn nguy hiểm
+- Đánh dấu các khung hình cần phân tích sâu hơn
+
+**Lớp 2: Phân tích điểm khớp:** Kiểm tra chi tiết vị trí và góc của các điểm khớp
+- Xác nhận hoặc loại bỏ các trạng thái nghi ngờ từ Lớp 1
+- Tạo mô tả chi tiết hơn về tư thế cơ thể
+
+**Lớp 3: Phân tích chuỗi thời gian:** Đánh giá diễn biến qua thời gian
+- Xác định mẫu chuyển động bất thường
+- Loại trừ các trường hợp dương tính giả (như cố tình nằm xuống)
+
+**Lớp 4: Phân tích ngữ cảnh:** Kết hợp thông tin về môi trường xung quanh
+- Vị trí so với giường, ghế và các đối tượng khác
+- Thời điểm trong ngày và các thông tin bổ sung khác
+
+**Quy trình xác nhận cảnh báo:**
+Để giảm thiểu cảnh báo giả, hệ thống yêu cầu nhiều tiêu chí được đáp ứng trước khi kích hoạt cảnh báo.
+
+**Tiêu chí thời gian:** Trạng thái bất thường phải duy trì trong khoảng thời gian tối thiểu
+- Té ngã: duy trì trạng thái nằm ít nhất 5-10 giây
+- Đau tim: tay đặt trên ngực ít nhất 5-10 giây
+
+**Tiêu chí không gian:** Vị trí bất thường phải nhất quán
+- Thân người nằm trên sàn, không phải trên giường
+- Tư thế không thường xuyên thay đổi trong khoảng thời gian ngắn
+
+**Tiêu chí dựa trên ngưỡng:** Các chỉ số phải vượt ngưỡng đã định
+- Tỷ lệ H/W phải thấp hơn ngưỡng té ngã (thường là 0.7-0.8)
+- Góc thân người phải nằm trong phạm vi xác định
+
+**Cơ chế giảm nhiễu:** Loại bỏ các phát hiện không ổn định
+- Áp dụng bộ lọc trung vị cho chuỗi trạng thái
+- Yêu cầu sự nhất quán trong nhiều khung hình liên tiếp
+
+### 3.5. Chi tiết triển khai
+
+#### 3.5.1. Luồng xử lý khung hình
+1. Thu nhận khung hình từ video hoặc camera
+2. Suy luận đa mô hình (tư thế, phát hiện đối tượng, phân đoạn)
+3. Phân tích trạng thái kết hợp tất cả kết quả phát hiện
+4. Trực quan hóa với chú thích màu dựa trên trạng thái
+
+#### 3.5.2. Logic của bộ phân tích trạng thái
+Lớp StatusAnalyzer triển khai logic ra quyết định cốt lõi:
+- Theo dõi lịch sử trạng thái theo thời gian
+- Quản lý bộ đếm thời gian cho xác nhận té ngã
+- Phát hiện tín hiệu khẩn cấp thông qua phân tích tư thế
+- Kiểm soát chuyển đổi trạng thái giữa normal, fall_prepare và fall_alert
+
+#### 3.5.3. Hệ thống trực quan hóa
+- Khung giới hạn màu dựa trên trạng thái:
+  * Xanh lá: normal
+  * Xanh dương: sleep
+  * Vàng: phát hiện té ngã ban đầu
+  * Cam: chuẩn bị cảnh báo té ngã
+  * Đỏ: xác nhận cảnh báo té ngã hoặc tình trạng khẩn cấp
+- Các điểm góc (ABCD) để hiển thị hướng
+- Văn bản trạng thái với điểm tin cậy
+- Hiển thị cảnh báo cho các tình huống khẩn cấp
+
+### 3.6. Triển khai và tích hợp
+
+#### 3.6.1. Xử lý GPU
+- main.py và server.py sử dụng CUDA để tăng tốc GPU
+- Tối ưu hóa cho hệ thống có GPU NVIDIA
+- Cung cấp khả năng xử lý thời gian thực
+- Phù hợp cho các ứng dụng giám sát liên tục
+
+#### 3.6.2. Xử lý CPU
+- main_server_cpu.py cung cấp xử lý chỉ dùng CPU
+- Tối ưu hóa cho hệ thống không có GPU chuyên dụng
+- Điều chỉnh hiệu suất để duy trì tốc độ khung hình chấp nhận được
+- Phù hợp cho các ứng dụng ít tài nguyên hơn
+
+#### 3.6.3. Triển khai máy chủ
+- Máy chủ web dựa trên Flask cho truy cập từ xa
+- Hỗ trợ WebSocket cho truyền video thời gian thực
+- Điểm cuối API RESTful để xử lý video
+- Hỗ trợ tải lên tệp và xử lý luồng
+
+### 3.7. Kết luận và hướng phát triển
+Hệ thống phát hiện té ngã cung cấp giải pháp toàn diện để giám sát và cảnh báo, với tính linh hoạt cho các kịch bản triển khai khác nhau. Phương pháp phát hiện đa lớp đảm bảo độ chính xác cao trong khi giảm thiểu cảnh báo giả. Thiết kế mô-đun cho phép xử lý GPU hiệu suất cao và triển khai dựa trên CPU dễ tiếp cận hơn, làm cho nó phù hợp với nhiều ứng dụng từ giám sát gia đình đến cơ sở y tế.
+
+Phát triển trong tương lai có thể bao gồm:
+- Tích hợp với hệ thống cảnh báo di động
+- Lựa chọn xử lý dựa trên đám mây
+- Nhận dạng cử chỉ khẩn cấp bổ sung
+- Khả năng học tập để thích ứng với mô hình chuyển động cá nhân
+- Phân tích ngữ cảnh môi trường mở rộng
+
+### 3.8. Pipeline Xử Lý Chi Tiết
+
+Phần này mô tả chi tiết quy trình xử lý từ đầu đến cuối của hệ thống, giúp hiểu rõ hơn cách các thành phần phối hợp để đưa ra kết quả cuối cùng.
+
+#### 3.8.1. Tổng quan quy trình
+
+Hệ thống xử lý theo quy trình sau:
+```
+[Camera/Video] → [Tiền xử lý] → [Phát hiện đa mô hình] → [Phân tích trạng thái] → [Ra quyết định] → [Hiển thị kết quả/Cảnh báo]
+```
+
+#### 3.8.2. Các bước chi tiết trong quy trình
+
+**Bước 1: Thu nhận và tiền xử lý hình ảnh**
+- Đọc khung hình từ nguồn video/camera (OpenCV)
+- Chuẩn hóa kích thước và định dạng ảnh (960×540 pixels)
+- Chuyển đổi không gian màu nếu cần thiết
+- Đưa hình ảnh vào bộ nhớ GPU (nếu sử dụng CUDA)
+
+**Bước 2: Phát hiện song song với đa mô hình**
+- Tất cả các mô hình được chạy song song trên cùng một khung hình:
+  * YOLO-Pose: Phát hiện người và các điểm khớp (17 keypoints)
+  * Best.pt: Phát hiện giường và gối
+  * YOLO-Seg: Phát hiện bổ sung giường qua phân đoạn
+  * YOLO12n: Phát hiện đối tượng bổ sung
+
+**Bước 3: Tích hợp và lọc kết quả phát hiện**
+- Lấy các điểm khớp từ người được phát hiện
+- Thu thập và kết hợp tất cả phát hiện về giường (từ 3 mô hình)
+- Sắp xếp các phát hiện theo độ tin cậy
+- Chọn phát hiện có độ tin cậy cao nhất cho mỗi loại đối tượng
+
+**Bước 4: Phân tích hình học và tỷ lệ**
+- Tính toán tỷ lệ chiều cao/chiều rộng (H/W) của khung người
+- Xác định trạng thái cơ bản dựa trên tỷ lệ (đứng, ngồi, nằm)
+- Chia các cấp độ "like_fall" (1-4) dựa trên mức độ nghiêm trọng
+- Tính toán các góc giữa các điểm khớp quan trọng
+
+**Bước 5: Phân tích không gian và vị trí tương đối**
+- Kiểm tra sự chồng lấn giữa người và giường/gối
+- Phân tích vị trí tương đối của người so với các đối tượng xung quanh
+- Xác định nếu người đang "nằm trên giường" (trạng thái sleep) hoặc "nằm trên sàn" (có thể té ngã)
+- Tính toán phần trăm chồng lấp để đánh giá độ tin cậy của quan hệ không gian
+
+**Bước 6: Phân tích chuỗi thời gian**
+- StatusAnalyzer lưu trữ lịch sử trạng thái qua nhiều khung hình
+- Theo dõi biến thiên trạng thái theo thời gian:
+  * Nếu phát hiện "lie" liên tục trong N khung hình → bắt đầu theo dõi té ngã
+  * Nếu không có chuyển động trong 10 giây → bắt đầu chuẩn bị cảnh báo
+  * Nếu trạng thái chuẩn bị kéo dài 5 giây → kích hoạt cảnh báo
+
+**Bước 7: Phân tích chuyển động**
+- Theo dõi sự thay đổi vị trí các điểm khớp giữa các khung hình
+- Tính toán vận tốc và gia tốc chuyển động
+- Phân biệt giữa chuyển động chậm có chủ đích và chuyển động nhanh bất thường
+- Phát hiện sự bất động kéo dài sau khi nằm xuống (dấu hiệu té ngã nghiêm trọng)
+
+**Bước 8: Phân tích tín hiệu khẩn cấp**
+- Theo dõi vị trí cánh tay so với các vùng quan trọng trên cơ thể
+- Phát hiện các mẫu chuyển động đặc trưng của tín hiệu khẩn cấp
+- Phân tích thời gian duy trì của các cử chỉ đặc biệt (tay đặt trên ngực, đầu)
+- Kết hợp với phân tích trạng thái chung để xác định tình huống
+
+**Bước 9: Ra quyết định đa lớp**
+- Kết hợp tất cả thông tin từ các bước phân tích trước đó
+- Áp dụng quy tắc phân cấp để xác định trạng thái cuối cùng:
+  1. Kiểm tra tín hiệu khẩn cấp (ưu tiên cao nhất)
+  2. Kiểm tra té ngã đã xác nhận (fall_alert)
+  3. Kiểm tra đang trong giai đoạn chuẩn bị cảnh báo (fall_prepare)
+  4. Kiểm tra nếu nằm trên giường (sleep)
+  5. Kiểm tra các cấp độ like_fall
+  6. Mặc định là trạng thái normal
+
+**Bước 10: Hiển thị và thông báo**
+- Vẽ khung giới hạn với màu sắc tương ứng với trạng thái
+- Hiển thị thông tin trạng thái và điểm tin cậy
+- Hiển thị các điểm khớp và các đường kết nối
+- Hiện cảnh báo text khi phát hiện tình huống khẩn cấp
+- Gửi thông báo đến các thiết bị/dịch vụ được cấu hình (nếu có)
+
+#### 3.8.3. Luồng dữ liệu giữa các thành phần
+
+**Truyền dữ liệu trong xử lý CPU/GPU:**
+```
+Video input → GPU → YOLO models → Kết quả phát hiện → CPU → StatusAnalyzer → Trạng thái → Hiển thị
+```
+
+**Luồng dữ liệu trong kiến trúc WebSocket:**
+```
+Camera → Server → Xử lý (CPU/GPU) → JSON results → WebSocket → Browser → Hiển thị trực quan
+```
+
+#### 3.8.4. Phương pháp xử lý song song
+
+Hệ thống cải thiện hiệu suất bằng cách:
+- Tải đa mô hình vào GPU cùng lúc (tiết kiệm thời gian chuyển mô hình)
+- Xử lý song song các mô hình phát hiện khác nhau
+- Optimizing CUDA memory usage with proper buffer management
+- Quản lý hàng đợi xử lý để cân bằng tài nguyên
+
+#### 3.8.5. Ví dụ về quy trình xử lý một tình huống té ngã
+
+**Trường hợp: Người bình thường → Té ngã → Nằm bất động → Cảnh báo**
+
+1. **t=0s**: Phát hiện người đứng (tỷ lệ H/W = 2.1, trạng thái "normal")
+2. **t=1s**: Người bắt đầu té ngã, tỷ lệ H/W giảm nhanh (trạng thái "like_fall_1")
+3. **t=1.2s**: Tỷ lệ H/W tiếp tục giảm (trạng thái "like_fall_2" → "like_fall_3")
+4. **t=1.5s**: Người nằm xuống sàn (tỷ lệ H/W = 0.6, trạng thái "lie")
+5. **t=1.5s-11.5s**: StatusAnalyzer theo dõi trạng thái "lie" trong 10 giây, không phát hiện chuyển động
+6. **t=11.5s**: Hệ thống chuyển sang trạng thái "fall_prepare", bắt đầu đếm ngược
+7. **t=11.5s-16.5s**: Hiển thị "Preparing Alert" với thời gian đếm ngược
+8. **t=16.5s**: Sau 5 giây chuẩn bị, hệ thống xác nhận cảnh báo, chuyển sang "fall_alert"
+9. **t=16.5s+**: Hiển thị "FALL ALERT - EMERGENCY!" và kích hoạt thông báo
+
+**So sánh với trường hợp ngủ bình thường:**
+
+1. **t=0s**: Phát hiện người đứng cạnh giường
+2. **t=2s**: Người nằm xuống, tỷ lệ H/W thấp (trạng thái "lie")
+3. **t=2s+**: Hệ thống phát hiện chồng lấp với giường → trạng thái "sleep"
+4. **Kết quả**: Không có cảnh báo nào được kích hoạt
+
+### 3.9. Cơ chế xử lý lỗi và đảm bảo độ tin cậy
+
+#### 3.9.1. Xử lý lỗi trong quá trình phát hiện
+
+**Khả năng chịu lỗi phát hiện:**
+Hệ thống được thiết kế để giảm thiểu tác động của các lỗi phát hiện ngẫu nhiên:
+- Sử dụng ngưỡng tin cậy tối thiểu (0.5) để loại bỏ những phát hiện không chắc chắn
+- Áp dụng bộ lọc cho các điểm khớp không ổn định hoặc bị che khuất
+- Loại bỏ các phát hiện có tư thế không hợp lý (điểm khớp nằm ngoài phạm vi sinh lý)
+
+**Xử lý các lỗi thường gặp:**
+- *Occlusion (bị che khuất)*: Hệ thống ước tính vị trí các điểm không nhìn thấy dựa trên các điểm khác
+- *Phát hiện nhiều người*: Xử lý riêng biệt từng người và ưu tiên người có tín hiệu nguy hiểm
+- *Mất khung hình*: Duy trì trạng thái gần nhất trong khoảng thời gian ngắn khi mất khung hình
+
+**Phục hồi từ lỗi:**
+- Tự động khởi tạo lại phát hiện khi chất lượng đầu vào cải thiện
+- Sử dụng cơ chế bộ nhớ đệm để khôi phục ngữ cảnh sau gián đoạn
+- Ghi nhật ký lỗi chi tiết để phân tích và cải thiện hệ thống
+
+#### 3.9.2. Giảm thiểu cảnh báo giả
+
+**Hệ thống xác minh kép:**
+Để ngăn chặn cảnh báo giả và đảm bảo độ tin cậy cao, hệ thống thực hiện xác minh nhiều lớp:
+
+1. **Xác nhận thời gian**: Tình trạng té ngã phải kéo dài liên tục trong 10 giây trước khi bắt đầu giai đoạn chuẩn bị
+2. **Xác nhận không chuyển động**: Xác định rằng đối tượng nằm trên sàn không có chuyển động đáng kể
+3. **Xác nhận tư thế**: Kiểm tra tư thế nằm không phải là tư thế ngủ bình thường
+4. **Xác nhận ngữ cảnh**: Đảm bảo đối tượng không nằm trên giường hoặc không gian nghỉ ngơi
+5. **Đếm ngược xác nhận**: Hiển thị đếm ngược 5 giây trước khi kích hoạt cảnh báo chính thức
+
+**Cơ chế đặt lại thông minh:**
+- Tự động hủy bỏ cảnh báo khi phát hiện chuyển động có chủ đích
+- Đặt lại quy trình khi phát hiện đối tượng đứng dậy
+- Cho phép can thiệp thủ công để hủy cảnh báo khi cần thiết
+
+#### 3.9.3. Khả năng mở rộng và tính ổn định
+
+**Khả năng mở rộng:**
+Hệ thống được thiết kế có khả năng mở rộng để đáp ứng nhiều kịch bản triển khai:
+- Hỗ trợ nhiều luồng video đồng thời trong phiên bản máy chủ
+- Cơ chế cân bằng tài nguyên CPU/GPU cho phép xử lý nhiều kênh
+- Khả năng điều chỉnh độ phức tạp của mô hình dựa trên tài nguyên có sẵn
+
+**Tính ổn định lâu dài:**
+- Cơ chế giám sát tự động phát hiện và khởi động lại các thành phần bị treo
+- Xử lý linh hoạt các nguồn video không ổn định (mất kết nối tạm thời)
+- Phương pháp làm mát và quản lý nhiệt độ GPU cho hoạt động liên tục
+
+**Ghi nhật ký và theo dõi hiệu suất:**
+- Ghi lại tất cả các sự kiện cảnh báo với hình ảnh và dữ liệu phát hiện
+- Theo dõi độ trễ và tốc độ xử lý khung hình
+- Thu thập số liệu thống kê về tỷ lệ lỗi phát hiện và cảnh báo giả
+
+#### 3.9.4. Các biện pháp dự phòng
+
+**Dự phòng mô hình:**
+- Hệ thống sử dụng nhiều mô hình phát hiện để tăng độ tin cậy tổng thể
+- Khi một mô hình không đưa ra kết quả tin cậy, các mô hình khác bù đắp
+- Phương pháp biểu quyết đa số để xác định kết quả cuối cùng khi có mâu thuẫn
+
+**Chuyển đổi liền mạch giữa GPU và CPU:**
+- Tự động chuyển đổi từ xử lý GPU sang CPU khi phát hiện lỗi GPU
+- Giảm độ phân giải và tốc độ khung hình để duy trì hoạt động trên phần cứng yếu hơn
+- Thông báo cho người dùng về sự thay đổi hiệu suất
+
+**Xử lý kết nối mạng không ổn định:**
+- Bộ nhớ đệm cho dữ liệu video đầu vào để xử lý mạng không ổn định
+- Cơ chế tự động kết nối lại khi kết nối bị gián đoạn
+- Tăng dần thời gian chờ giữa các lần thử kết nối lại (exponential backoff)
+

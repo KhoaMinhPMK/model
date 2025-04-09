@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src * self blob: data: gap:; style-src * self 'unsafe-inline' blob: data: gap:; script-src * 'self' 'unsafe-eval' 'unsafe-inline' blob: data: gap:; object-src * 'self' blob: data: gap:; img-src * self 'unsafe-inline' blob: data: gap:; connect-src self * 'unsafe-inline' blob: data: gap:; frame-src * self blob: data: gap:;">
+    <title>Security Camera System</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="camera-controls">
+            <div class="input-group">
+                <select id="cameraType">
+                    <option value="webcam">Webcam</option>
+                    <option value="ip_camera">IP Camera</option>
+                    <option value="rtsp">RTSP Stream</option>
+                    <option value="virtual">Virtual Camera</option>
+                </select>
+                <input type="text" id="cameraSource" placeholder="Enter camera URL if needed">
+                <button id="connectBtn">Connect</button>
+            </div>
+            <div class="input-group">
+                <input type="file" id="videoFile" accept="video/*">
+                <button id="loadBtn">Load Video</button>
+            </div>
+            <div class="video-controls">
+                <input type="range" id="videoProgress" min="0" max="100" value="0">
+                <span id="timestamp">00:00 / 00:00</span>
+            </div>
+            <div class="control-buttons">
+                <button id="startBtn">Start Camera</button>
+                <button id="stopBtn">Stop Camera</button>
+                <button id="captureBtn">Take Screenshot</button>
+                <button id="recordBtn">Start Recording</button>
+            </div>
+            <div class="settings">
+                <label>Detection Mode:</label>
+                <select id="detectionMode">
+                    <option value="all">All Detections</option>
+                    <option value="person">Person Only</option>
+                    <option value="motion">Motion Only</option>
+                </select>
+                <div class="sensitivity">
+                    <label>Sensitivity:</label>
+                    <input type="range" id="sensitivity" min="0" max="100" value="50">
+                </div>
+            </div>
+        </div>
+        <div class="camera-view">
+            <div id="status" class="status">Disconnected</div>
+            <video id="cameraFeed" autoplay></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <div class="alerts">
+            <h3>Alert History</h3>
+            <div id="alertList"></div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
